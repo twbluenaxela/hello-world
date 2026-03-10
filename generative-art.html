@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Generative Algorithmic Art</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; cursor: crosshair; }
+  canvas { display: block; }
+  #controls {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 10px; z-index: 10;
+  }
+  #controls button {
+    padding: 8px 18px; border: 1px solid rgba(255,255,255,0.3);
+    background: rgba(0,0,0,0.6); color: #fff; font: 14px monospace;
+    cursor: pointer; border-radius: 4px; transition: 0.2s;
+  }
+  #controls button:hover { background: rgba(255,255,255,0.15); }
+  #controls button.active { border-color: #0ff; color: #0ff; }
+  #info {
+    position: fixed; top: 15px; left: 15px; color: rgba(255,255,255,0.5);
+    font: 12px monospace; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="info">click to disturb / space to regenerate</div>
+<div id="controls">
+  <button class="active" onclick="setMode(0,this)">Flow Field</button>
+  <button onclick="setMode(1,this)">Spirograph</button>
+  <button onclick="setMode(2,this)">Fractal Tree</button>
+  <button onclick="setMode(3,this)">Particle Galaxy</button>
+  <button onclick="setMode(4,this)">Reaction Diffusion</button>
+</div>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, mode = 0, frame = 0, seed = Math.random() * 9999;
+let mx = 0, my = 0, clicked = false;
+
+function resize() {
+  W = canvas.width = innerWidth;
+  H = canvas.height = innerHeight;
+  init();
+}
+addEventListener('resize', resize);
+addEventListener('mousemove', e => { mx = e.clientX; my = e.clientY; });
+addEventListener('mousedown', () => { clicked = true; });
+addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); seed = Math.random() * 9999; init(); }});
+
+function setMode(m, btn) {
+  mode = m; frame = 0; seed = Math.random() * 9999;
+  document.querySelectorAll('#controls button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  init();
+}
+
+// --- Noise (simplex-ish) ---
+function noise(x, y, z = 0) {
+  const p = seed;
+  const dot = x * 12.9898 + y * 78.233 + z * 45.164 + p;
+  const s = Math.sin(dot) * 43758.5453;
+  return s - Math.floor(s);
+}
+function smoothNoise(x, y, z = 0) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const n00 = noise(ix, iy, z), n10 = noise(ix+1, iy, z);
+  const n01 = noise(ix, iy+1, z), n11 = noise(ix+1, iy+1, z);
+  return n00*(1-sx)*(1-sy) + n10*sx*(1-sy) + n01*(1-sx)*sy + n11*sx*sy;
+}
+function fbm(x, y, z = 0, oct = 5) {
+  let v = 0, a = 0.5, f = 1;
+  for (let i = 0; i < oct; i++) { v += a * smoothNoise(x*f, y*f, z); a *= 0.5; f *= 2; }
+  return v;
+}
+
+// --- HSL helper ---
+function hsl(h, s, l, a = 1) { return `hsla(${h},${s}%,${l}%,${a})`; }
+
+// ===================== MODE 0: FLOW FIELD =====================
+let flowParticles = [];
+function initFlow() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+  flowParticles = [];
+  for (let i = 0; i < 3000; i++) {
+    flowParticles.push({ x: Math.random()*W, y: Math.random()*H, vx: 0, vy: 0, life: Math.random()*200+100 });
+  }
+}
+function drawFlow() {
+  ctx.fillStyle = 'rgba(0,0,0,0.02)';
+  ctx.fillRect(0, 0, W, H);
+  const t = frame * 0.003;
+  for (const p of flowParticles) {
+    const nx = p.x / 300, ny = p.y / 300;
+    const angle = fbm(nx, ny, t, 4) * Math.PI * 6;
+    const dist = Math.hypot(p.x - mx, p.y - my);
+    let fx = Math.cos(angle) * 1.5, fy = Math.sin(angle) * 1.5;
+    if (clicked && dist < 200) {
+      fx += (p.x - mx) / dist * 3;
+      fy += (p.y - my) / dist * 3;
+    }
+    p.vx = p.vx * 0.9 + fx * 0.1;
+    p.vy = p.vy * 0.9 + fy * 0.1;
+    p.x += p.vx; p.y += p.vy; p.life--;
+    const hue = (fbm(nx*2, ny*2, t*2, 3) * 360 + frame * 0.3) % 360;
+    ctx.fillStyle = hsl(hue, 80, 60, 0.4);
+    ctx.fillRect(p.x, p.y, 1.5, 1.5);
+    if (p.life <= 0 || p.x < 0 || p.x > W || p.y < 0 || p.y > H) {
+      p.x = Math.random()*W; p.y = Math.random()*H;
+      p.vx = 0; p.vy = 0; p.life = Math.random()*200+100;
+    }
+  }
+  clicked = false;
+}
+
+// ===================== MODE 1: SPIROGRAPH =====================
+let spiroAngle = 0, spiroTrails = [];
+function initSpiro() {
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  spiroAngle = 0; spiroTrails = [];
+}
+function drawSpiro() {
+  ctx.fillStyle = 'rgba(0,0,0,0.01)';
+  ctx.fillRect(0, 0, W, H);
+  const cx = W/2, cy = H/2;
+  const R = Math.min(W, H) * 0.3;
+  const arms = 3 + Math.floor(seed % 5);
+  ctx.lineWidth = 0.8;
+  for (let a = 0; a < arms; a++) {
+    const offset = (a / arms) * Math.PI * 2;
+    const r1 = R * (0.5 + 0.3 * Math.sin(seed + a));
+    const r2 = R * (0.2 + 0.2 * Math.cos(seed * 2 + a));
+    const r3 = R * 0.15;
+    const s1 = 1 + seed % 3, s2 = 2 + (seed * 7) % 5, s3 = 3 + (seed * 13) % 7;
+    const t = spiroAngle;
+    const x = cx + r1*Math.cos(t*s1+offset) + r2*Math.cos(t*s2+offset) + r3*Math.cos(t*s3+offset);
+    const y = cy + r1*Math.sin(t*s1+offset) + r2*Math.sin(t*s2+offset) + r3*Math.sin(t*s3+offset);
+    if (clicked) {
+      const dx = x - mx, dy = y - my;
+      const px = x + dx * 0.3, py = y + dy * 0.3;
+      spiroTrails.push({ x: px, y: py, hue: (t * 50 + a * 60) % 360 });
+    }
+    spiroTrails.push({ x, y, hue: (t * 50 + a * 60) % 360 });
+  }
+  clicked = false;
+  if (spiroTrails.length > 2) {
+    for (let i = 1; i < spiroTrails.length; i++) {
+      const p = spiroTrails[i-1], q = spiroTrails[i];
+      if (Math.hypot(q.x-p.x, q.y-p.y) < 50) {
+        ctx.strokeStyle = hsl(q.hue, 90, 55, 0.6);
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+      }
+    }
+  }
+  spiroAngle += 0.015;
+  if (spiroTrails.length > 80000) spiroTrails = spiroTrails.slice(-40000);
+}
+
+// ===================== MODE 2: FRACTAL TREE =====================
+let treeTime = 0;
+function initTree() {}
+function drawTree() {
+  ctx.fillStyle = 'rgba(0,0,0,0.1)';
+  ctx.fillRect(0, 0, W, H);
+  treeTime = frame * 0.01;
+  const windX = clicked ? (mx - W/2) / W * 0.5 : 0;
+  drawBranch(W/2, H*0.85, -Math.PI/2, H*0.22, 12, windX);
+  clicked = false;
+}
+function drawBranch(x, y, angle, len, depth, wind) {
+  if (depth <= 0 || len < 2) return;
+  const sway = Math.sin(treeTime + depth * 0.7 + x * 0.01) * 0.05;
+  const a = angle + sway + wind * (1 - depth/12);
+  const nx = x + Math.cos(a) * len;
+  const ny = y + Math.sin(a) * len;
+  const hue = (120 + depth * 15 + treeTime * 20) % 360;
+  const lum = 30 + depth * 4;
+  ctx.strokeStyle = hsl(hue, 70, lum, 0.7);
+  ctx.lineWidth = depth * 0.8;
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(nx, ny); ctx.stroke();
+  if (depth <= 3) {
+    ctx.fillStyle = hsl((hue + 60) % 360, 80, 60, 0.3);
+    ctx.beginPath(); ctx.arc(nx, ny, 3 + Math.random()*4, 0, Math.PI*2); ctx.fill();
+  }
+  const spread = 0.4 + Math.sin(treeTime * 0.5 + seed) * 0.15;
+  const shrink = 0.65 + Math.sin(seed + depth) * 0.08;
+  drawBranch(nx, ny, a - spread, len * shrink, depth - 1, wind);
+  drawBranch(nx, ny, a + spread, len * shrink, depth - 1, wind);
+  if (depth > 6 && Math.sin(seed * depth) > 0.3) {
+    drawBranch(nx, ny, a, len * shrink * 0.8, depth - 2, wind);
+  }
+}
+
+// ===================== MODE 3: PARTICLE GALAXY =====================
+let stars = [];
+function initGalaxy() {
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  stars = [];
+  for (let i = 0; i < 2000; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = Math.pow(Math.random(), 0.5) * Math.min(W,H) * 0.45;
+    const arm = Math.floor(Math.random() * (2 + seed % 4));
+    const armAngle = arm / (2 + seed % 4) * Math.PI * 2;
+    const spiral = dist * 0.008;
+    stars.push({
+      angle: armAngle + spiral + (Math.random()-0.5)*0.5,
+      dist, speed: 0.002 + Math.random()*0.003,
+      size: 0.5 + Math.random()*2,
+      hue: Math.random()*60 + 200,
+      brightness: 0.3 + Math.random()*0.7
+    });
+  }
+}
+function drawGalaxy() {
+  ctx.fillStyle = 'rgba(0,0,0,0.05)';
+  ctx.fillRect(0, 0, W, H);
+  const cx = W/2, cy = H/2;
+  const attract = clicked ? 0.02 : 0;
+  for (const s of stars) {
+    s.angle += s.speed;
+    if (clicked) {
+      const sx = cx + Math.cos(s.angle) * s.dist;
+      const sy = cy + Math.sin(s.angle) * s.dist;
+      const dx = mx - sx, dy = my - sy;
+      const d = Math.hypot(dx, dy) + 1;
+      s.dist += (d < 200 ? -2 : 0);
+    }
+    s.dist = Math.max(5, s.dist);
+    const x = cx + Math.cos(s.angle) * s.dist;
+    const y = cy + Math.sin(s.angle) * s.dist * 0.6;
+    const shimmer = 0.5 + 0.5 * Math.sin(frame * 0.05 + s.angle * 10);
+    ctx.fillStyle = hsl(s.hue + s.dist * 0.1, 80, 50 + shimmer * 30, s.brightness * shimmer);
+    ctx.beginPath(); ctx.arc(x, y, s.size * shimmer, 0, Math.PI*2); ctx.fill();
+  }
+  // center glow
+  const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, 80);
+  grd.addColorStop(0, 'rgba(255,220,180,0.15)');
+  grd.addColorStop(1, 'rgba(255,220,180,0)');
+  ctx.fillStyle = grd;
+  ctx.fillRect(cx-80, cy-80, 160, 160);
+  clicked = false;
+}
+
+// ===================== MODE 4: REACTION DIFFUSION =====================
+let rdA, rdB, rdAn, rdBn, rdW, rdH;
+function initRD() {
+  rdW = Math.floor(W / 4); rdH = Math.floor(H / 4);
+  rdA = new Float32Array(rdW * rdH).fill(1);
+  rdB = new Float32Array(rdW * rdH).fill(0);
+  rdAn = new Float32Array(rdW * rdH);
+  rdBn = new Float32Array(rdW * rdH);
+  // seed some spots
+  for (let i = 0; i < 15; i++) {
+    const cx = Math.floor(Math.random() * rdW);
+    const cy = Math.floor(Math.random() * rdH);
+    const r = 3 + Math.random() * 8;
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (dx*dx+dy*dy < r*r) {
+        const idx = ((cy+dy+rdH)%rdH)*rdW + ((cx+dx+rdW)%rdW);
+        rdB[idx] = 1;
+      }
+    }
+  }
+}
+function stepRD() {
+  const dA = 1.0, dB = 0.5, f = 0.055, k = 0.062;
+  for (let y = 0; y < rdH; y++) for (let x = 0; x < rdW; x++) {
+    const i = y * rdW + x;
+    const a = rdA[i], b = rdB[i];
+    // laplacian
+    const l = (y-1+rdH)%rdH, r2 = (y+1)%rdH, le = (x-1+rdW)%rdW, ri = (x+1)%rdW;
+    const lapA = rdA[l*rdW+x] + rdA[r2*rdW+x] + rdA[y*rdW+le] + rdA[y*rdW+ri] - 4*a;
+    const lapB = rdB[l*rdW+x] + rdB[r2*rdW+x] + rdB[y*rdW+le] + rdB[y*rdW+ri] - 4*b;
+    const abb = a * b * b;
+    rdAn[i] = Math.min(1, Math.max(0, a + dA * lapA - abb + f * (1 - a)));
+    rdBn[i] = Math.min(1, Math.max(0, b + dB * lapB + abb - (k + f) * b));
+  }
+  [rdA, rdAn] = [rdAn, rdA];
+  [rdB, rdBn] = [rdBn, rdB];
+  // mouse interaction
+  if (clicked) {
+    const rx = Math.floor(mx / 4), ry = Math.floor(my / 4);
+    for (let dy = -5; dy <= 5; dy++) for (let dx = -5; dx <= 5; dx++) {
+      const idx = ((ry+dy+rdH)%rdH)*rdW + ((rx+dx+rdW)%rdW);
+      rdB[idx] = 1;
+    }
+    clicked = false;
+  }
+}
+function drawRD() {
+  for (let s = 0; s < 8; s++) stepRD();
+  const img = ctx.createImageData(rdW, rdH);
+  for (let i = 0; i < rdW * rdH; i++) {
+    const v = rdA[i] - rdB[i];
+    const hue = (v * 360 + frame * 0.2) % 360;
+    const sat = 0.8, lit = v * 0.5 + 0.2;
+    // quick HSL to RGB
+    const c = (1 - Math.abs(2*lit-1)) * sat;
+    const x2 = c * (1 - Math.abs((hue/60)%2-1));
+    const m = lit - c/2;
+    let r=0,g=0,b=0;
+    if (hue<60){r=c;g=x2;}else if(hue<120){r=x2;g=c;}else if(hue<180){g=c;b=x2;}
+    else if(hue<240){g=x2;b=c;}else if(hue<300){r=x2;b=c;}else{r=c;b=x2;}
+    const j = i*4;
+    img.data[j]=(r+m)*255; img.data[j+1]=(g+m)*255; img.data[j+2]=(b+m)*255; img.data[j+3]=255;
+  }
+  const offscreen = new OffscreenCanvas(rdW, rdH);
+  offscreen.getContext('2d').putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(offscreen, 0, 0, W, H);
+}
+
+// ===================== MAIN LOOP =====================
+function init() {
+  frame = 0;
+  [initFlow, initSpiro, initTree, initGalaxy, initRD][mode]();
+}
+function animate() {
+  [drawFlow, drawSpiro, drawTree, drawGalaxy, drawRD][mode]();
+  frame++;
+  requestAnimationFrame(animate);
+}
+resize();
+animate();
+</script>
+</body>
+</html>
